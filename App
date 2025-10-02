@@ -1,0 +1,1438 @@
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, addDoc, onSnapshot, collection, query, where, orderBy, deleteDoc, setDoc, updateDoc } from 'firebase/firestore';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
+
+// --- CONFIGURATION & FIREBASE SETUP ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// Default categories (unchanged for transaction functionality)
+const DEFAULT_CATEGORIES = [
+    { name: 'Printing Income', type: 'in', color: 'bg-green-100' },
+    { name: 'IT Service Fees', type: 'in', color: 'bg-green-100' },
+    { name: 'Supplies/Consumables', type: 'out', color: 'bg-red-100' },
+    { name: 'Rent & Utilities', type: 'out', color: 'bg-red-100' },
+    { name: 'Salary', type: 'out', color: 'bg-red-100' },
+];
+
+// Default Inventory Items (Sinhala/Latin names for display)
+const DEFAULT_INVENTORY_ITEMS = [
+    { name: 'A4 Paper (Ream)', unit: 'Ream', currentStock: 20, lowStockThreshold: 5, type: 'supply', color: 'bg-blue-100' },
+    { name: 'Black Toner Cartridge', unit: 'Unit', currentStock: 3, lowStockThreshold: 1, type: 'supply', color: 'bg-gray-100' },
+    { name: 'Colour Ink Bottle', unit: 'Bottle', currentStock: 8, lowStockThreshold: 2, type: 'supply', color: 'bg-pink-100' },
+    { name: 'Network Cable (Meter)', unit: 'Meter', currentStock: 100, lowStockThreshold: 20, type: 'supply', color: 'bg-yellow-100' },
+];
+
+// Icon components (Sinhala/Latin names in comments for context)
+const LayoutDashboard = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="12" y1="3" x2="12" y2="21"/></svg>); // Dashbord (දෑෂ්බෝර්ඩ්)
+const History = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v6l-2-2m-4 4h-2"/><path d="M18 10h2l-2 2m4 4v-6"/><path d="M21.5 16a9 9 0 1 1-2.9-10.4"/><path d="M12 12v-6"/></svg>); // Transactions (ගනුදෙනු)
+const Settings = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2H4a2 2 0 0 0-2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1-2 2H2a2 2 0 0 0-2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>); // Settings (සැකසුම්)
+const Plus = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>); // Plus
+const Trash2 = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1.1-.9 2-2 2H7c-1.1 0-2-.9-2-2V6"/><path d="M8 6V4c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>); // Delete (මකන්න)
+const DollarSign = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>); // Dollar (මුදල්)
+const BarChartIcon = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>); // Reports (වාර්තා)
+const Banknote = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="10" width="18" height="10" rx="2"/><path d="M2 10l-1-2h22l-1 2"/><circle cx="12" cy="15" r="3"/><path d="M7 10h10"/></svg>); // Banknote (මුදල් නෝට්ටුව)
+const Archive = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="5" rx="1"/><path d="M4 12v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M10 12h4"/></svg>); // Inventory (තොගය)
+const AlertTriangle = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>); // Alert (අවවාද)
+
+// Colors for the Expense Pie Chart
+const PIE_COLORS = ['#EF4444', '#F97316', '#FACC15', '#10B981', '#3B82F6', '#8B5CF6', '#EC4899', '#6B7280'];
+
+// Format currency - Sri Lankan Rupee (LKR)
+const formatCurrency = (amount) => {
+    return new Intl.NumberFormat('si-LK', {
+        style: 'currency',
+        currency: 'LKR',
+        minimumFractionDigits: 2
+    }).format(amount);
+};
+
+// Function to format Date objects as 'YYYY-MM-DD' string for input value
+const formatDateInput = (date) => date.toISOString().substring(0, 10);
+
+// --- MAIN APPLICATION COMPONENT ---
+const App = () => {
+    const [db, setDb] = useState(null);
+    const [auth, setAuth] = useState(null);
+    const [userId, setUserId] = useState(null);
+    const [isAuthReady, setIsAuthReady] = useState(false);
+    const [activePage, setActivePage] = useState('dashboard');
+    const [transactions, setTransactions] = useState([]);
+    const [categories, setCategories] = useState([]);
+    const [inventoryItems, setInventoryItems] = useState([]);
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [modalType, setModalType] = useState('in'); // 'in' or 'out'
+
+    // --- HELPER FUNCTIONS ---
+    const calculateSummary = useCallback((data) => {
+        const totalIn = data.filter(t => t.type === 'in').reduce((sum, t) => sum + t.amount, 0);
+        const totalOut = data.filter(t => t.type === 'out').reduce((sum, t) => sum + t.amount, 0);
+        return { totalIn, totalOut, netProfit: totalIn - totalOut };
+    }, []);
+
+    const lowStockAlerts = useMemo(() => {
+        return inventoryItems.filter(item => item.currentStock <= item.lowStockThreshold);
+    }, [inventoryItems]);
+
+
+    // --- FIREBASE INITIALIZATION & AUTHENTICATION ---
+    useEffect(() => {
+        if (Object.keys(firebaseConfig).length === 0) {
+            console.error("Firebase config is missing.");
+            setIsAuthReady(true);
+            return;
+        }
+
+        const app = initializeApp(firebaseConfig);
+        const firestore = getFirestore(app);
+        const authService = getAuth(app);
+
+        setDb(firestore);
+        setAuth(authService);
+
+        // Auth listener
+        const unsubscribe = onAuthStateChanged(authService, async (user) => {
+            if (user) {
+                setUserId(user.uid);
+            } else {
+                try {
+                    if (initialAuthToken) {
+                        const result = await signInWithCustomToken(authService, initialAuthToken);
+                        setUserId(result.user.uid);
+                    } else {
+                        const result = await signInAnonymously(authService);
+                        setUserId(result.user.uid);
+                    }
+                } catch (error) {
+                    console.error("Firebase sign-in failed:", error);
+                    setUserId(crypto.randomUUID());
+                }
+            }
+            setIsAuthReady(true);
+        });
+
+        return () => unsubscribe();
+    }, []);
+
+    // --- FIRESTORE LISTENERS ---
+
+    // 1. Listen for Categories (Private Data)
+    useEffect(() => {
+        if (db && userId) {
+            const categoriesRef = collection(db, `artifacts/${appId}/users/${userId}/categories`);
+            const q = query(categoriesRef);
+
+            const unsubscribe = onSnapshot(q, async (snapshot) => {
+                const fetchedCategories = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                }));
+
+                // If no categories exist, initialize default ones
+                if (fetchedCategories.length === 0) {
+                    console.log("Initializing default categories...");
+                    for (const cat of DEFAULT_CATEGORIES) {
+                        await setDoc(doc(categoriesRef), {
+                            name: cat.name,
+                            type: cat.type,
+                            color: cat.color,
+                            createdAt: new Date().toISOString()
+                        }).catch(e => console.error("Error setting default category:", e));
+                    }
+                } else {
+                    setCategories(fetchedCategories);
+                }
+            }, (error) => console.error("Error fetching categories:", error));
+
+            return () => unsubscribe();
+        }
+    }, [db, userId]);
+
+    // 2. Listen for Transactions (Public Data)
+    useEffect(() => {
+        if (db && userId) {
+            const transactionsRef = collection(db, `artifacts/${appId}/public/data/transactions`);
+            const q = query(transactionsRef);
+
+            const unsubscribe = onSnapshot(q, (snapshot) => {
+                const fetchedTransactions = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data(),
+                    amount: parseFloat(doc.data().amount),
+                    date: doc.data().date instanceof Date ? doc.data().date : new Date(doc.data().date)
+                }));
+
+                // Sort locally by date descending
+                fetchedTransactions.sort((a, b) => b.date.getTime() - a.date.getTime());
+                setTransactions(fetchedTransactions);
+            }, (error) => console.error("Error fetching transactions:", error));
+
+            return () => unsubscribe();
+        }
+    }, [db, userId]);
+
+    // 3. Listen for Inventory (Private Data) - NEW
+    useEffect(() => {
+        if (db && userId) {
+            const inventoryRef = collection(db, `artifacts/${appId}/users/${userId}/inventory`);
+            const q = query(inventoryRef);
+
+            const unsubscribe = onSnapshot(q, async (snapshot) => {
+                const fetchedInventory = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data(),
+                    currentStock: parseFloat(doc.data().currentStock),
+                    lowStockThreshold: parseFloat(doc.data().lowStockThreshold),
+                }));
+
+                // If no inventory items exist, initialize default ones
+                if (fetchedInventory.length === 0) {
+                    console.log("Initializing default inventory...");
+                    for (const item of DEFAULT_INVENTORY_ITEMS) {
+                        await addDoc(inventoryRef, {
+                            ...item,
+                            createdAt: new Date().toISOString()
+                        }).catch(e => console.error("Error setting default inventory item:", e));
+                    }
+                } else {
+                    setInventoryItems(fetchedInventory);
+                }
+            }, (error) => console.error("Error fetching inventory:", error));
+
+            return () => unsubscribe();
+        }
+    }, [db, userId]);
+
+
+    // --- TRANSACTION MANAGEMENT LOGIC ---
+    const addTransaction = useCallback(async (data) => {
+        if (!db || !userId) return console.error("Database not initialized or User ID missing.");
+
+        const transactionsRef = collection(db, `artifacts/${appId}/public/data/transactions`);
+        const transactionData = {
+            ...data,
+            amount: parseFloat(data.amount),
+            date: data.date,
+            userId: userId,
+            createdAt: new Date().toISOString()
+        };
+
+        try {
+            await addDoc(transactionsRef, transactionData);
+            return true;
+        } catch (e) {
+            console.error("Error adding document: ", e);
+            return false;
+        }
+    }, [db, userId]);
+
+    const deleteTransaction = useCallback(async (id) => {
+        if (!db || !userId) return console.error("Database not initialized or User ID missing.");
+        
+        try {
+            await deleteDoc(doc(db, `artifacts/${appId}/public/data/transactions`, id));
+            return true;
+        } catch (e) {
+            console.error("Error deleting document: ", e);
+            return false;
+        }
+    }, [db, userId]);
+
+
+    // --- INVENTORY MANAGEMENT LOGIC (NEW) ---
+    const updateInventoryStock = useCallback(async (itemId, changeAmount, operationType) => {
+        if (!db || !userId) return console.error("Database not initialized or User ID missing.");
+
+        const itemRef = doc(db, `artifacts/${appId}/users/${userId}/inventory`, itemId);
+        const item = inventoryItems.find(i => i.id === itemId);
+
+        if (!item) return console.error("Inventory item not found.");
+        
+        let newStock = item.currentStock;
+
+        if (operationType === 'add') {
+            newStock = item.currentStock + changeAmount;
+        } else if (operationType === 'subtract') {
+            newStock = Math.max(0, item.currentStock - changeAmount); // Prevent negative stock
+        } else {
+            console.error("Invalid inventory operation type.");
+            return false;
+        }
+
+        try {
+            await updateDoc(itemRef, {
+                currentStock: newStock,
+                updatedAt: new Date().toISOString()
+            });
+            return true;
+        } catch (e) {
+            console.error("Error updating inventory stock: ", e);
+            return false;
+        }
+    }, [db, userId, inventoryItems]);
+    
+    const addInventoryItem = useCallback(async (data) => {
+        if (!db || !userId) return console.error("Database not initialized or User ID missing.");
+
+        const inventoryRef = collection(db, `artifacts/${appId}/users/${userId}/inventory`);
+        
+        try {
+            await addDoc(inventoryRef, {
+                ...data,
+                currentStock: parseFloat(data.currentStock || 0),
+                lowStockThreshold: parseFloat(data.lowStockThreshold || 0),
+                createdAt: new Date().toISOString()
+            });
+            return true;
+        } catch (e) {
+            console.error("Error adding inventory item: ", e);
+            return false;
+        }
+    }, [db, userId]);
+
+    const deleteInventoryItem = useCallback(async (id) => {
+        if (!db || !userId) return console.error("Database not initialized or User ID missing.");
+        
+        try {
+            await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/inventory`, id));
+            return true;
+        } catch (e) {
+            console.error("Error deleting inventory item: ", e);
+            return false;
+        }
+    }, [db, userId]);
+
+    // --- UTILITY FOR CHARTS (Memoized to prevent unnecessary recalculation) ---
+    const chartData = useMemo(() => {
+        const today = new Date();
+        const startOfCurrentYear = new Date(today.getFullYear(), 0, 1);
+
+        // Filter transactions from the start of the current year onwards
+        const relevantTransactions = transactions.filter(t => t.date >= startOfCurrentYear);
+
+        // 1. Monthly Trend Data
+        const monthlyDataMap = new Array(12).fill(0).map((_, i) => ({
+            name: new Date(0, i).toLocaleString('si-LK', { month: 'short' }), // Month in Sinhala/Latin
+            Income: 0,
+            Expense: 0,
+            Result: 0
+        }));
+
+        relevantTransactions.forEach(t => {
+            if (t.date.getFullYear() === today.getFullYear()) {
+                const monthIndex = t.date.getMonth();
+                if (t.type === 'in') {
+                    monthlyDataMap[monthIndex].Income += t.amount;
+                } else {
+                    monthlyDataMap[monthIndex].Expense += t.amount;
+                }
+            }
+        });
+
+        const monthlyTrendData = monthlyDataMap.map(m => ({
+            ...m,
+            Result: m.Income - m.Expense
+        }));
+
+        // 2. Expense Overview (Pie Chart Data)
+        const expenseTotals = relevantTransactions
+            .filter(t => t.type === 'out' && t.date.getMonth() === today.getMonth()) // Filter current month expenses
+            .reduce((acc, t) => {
+                acc[t.category] = (acc[t.category] || 0) + t.amount;
+                return acc;
+            }, {});
+
+        const totalCurrentMonthExpense = Object.values(expenseTotals).reduce((sum, amount) => sum + amount, 0);
+
+        let expensePieData = Object.keys(expenseTotals)
+            .map(category => ({
+                name: category,
+                value: expenseTotals[category],
+                percent: (expenseTotals[category] / totalCurrentMonthExpense) * 100
+            }))
+            .sort((a, b) => b.value - a.value);
+
+        // Handle 'Other' category if more than 5 categories exist
+        if (expensePieData.length > 5) {
+            const topFive = expensePieData.slice(0, 4);
+            const others = expensePieData.slice(4).reduce((sum, item) => sum + item.value, 0);
+            const othersPercent = (others / totalCurrentMonthExpense) * 100;
+
+            expensePieData = [
+                ...topFive,
+                { name: 'Other Expenses', value: others, percent: othersPercent }
+            ];
+        }
+
+        return { monthlyTrendData, expensePieData };
+    }, [transactions]);
+
+
+    // --- UI COMPONENTS ---
+
+    // 1. Transaction Modal (unchanged)
+    const TransactionModal = ({ type, onClose, onSave }) => {
+        const isCashIn = type === 'in';
+        const filteredCategories = categories.filter(cat => cat.type === type);
+
+        const [formData, setFormData] = useState({
+            date: new Date().toISOString().substring(0, 10),
+            category: filteredCategories.length > 0 ? filteredCategories[0].name : '',
+            description: '',
+            amount: '',
+            paymentMethod: 'Cash',
+            type: type,
+        });
+
+        const handleChange = (e) => {
+            const { name, value } = e.target;
+            setFormData(prev => ({ ...prev, [name]: value }));
+        };
+
+        const handleSubmit = async (e) => {
+            e.preventDefault();
+            if (await onSave(formData)) {
+                onClose();
+            }
+        };
+
+        const categoryOptions = filteredCategories.length > 0
+            ? filteredCategories.map(cat => (
+                <option key={cat.id || cat.name} value={cat.name}>{cat.name}</option>
+              ))
+            : <option value="Uncategorized">Uncategorized ({type === 'in' ? 'Income' : 'Expense'})</option>;
+
+
+        return (
+            <div className="fixed inset-0 bg-gray-900 bg-opacity-70 flex items-center justify-center p-4 z-50">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
+                    <h2 className={`text-2xl font-bold mb-4 ${isCashIn ? 'text-green-600' : 'text-red-600'}`}>
+                        {isCashIn ? 'ආදායම් ඇතුලත් කරන්න (Cash In)' : 'වියදම් ඇතුලත් කරන්න (Cash Out)'}
+                    </h2>
+                    <form onSubmit={handleSubmit}>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">දිනය (Date)</label>
+                                <input
+                                    type="date"
+                                    name="date"
+                                    value={formData.date}
+                                    onChange={handleChange}
+                                    required
+                                    className="mt-1 w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">වර්ගය (Category)</label>
+                                <select
+                                    name="category"
+                                    value={formData.category}
+                                    onChange={handleChange}
+                                    required
+                                    className="mt-1 w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                                >
+                                    {categoryOptions}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">මුදල (Amount) ({isCashIn ? 'ආදායම' : 'වියදම'})</label>
+                                <input
+                                    type="number"
+                                    name="amount"
+                                    value={formData.amount}
+                                    onChange={handleChange}
+                                    placeholder="0.00"
+                                    min="0.01"
+                                    step="0.01"
+                                    required
+                                    className="mt-1 w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">ගෙවීමේ ක්‍රමය (Payment Method)</label>
+                                <select
+                                    name="paymentMethod"
+                                    value={formData.paymentMethod}
+                                    onChange={handleChange}
+                                    required
+                                    className="mt-1 w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                                >
+                                    {['Cash (මුදල්)', 'Mobile Money (ජංගම මුදල්)', 'Bank Transfer (බැංකු හුවමාරු)', 'Other (වෙනත්)'].map(method => (
+                                        <option key={method} value={method}>{method}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">විස්තරය (Description - optional)</label>
+                                <textarea
+                                    name="description"
+                                    value={formData.description}
+                                    onChange={handleChange}
+                                    rows="2"
+                                    className="mt-1 w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                                />
+                            </div>
+                        </div>
+                        <div className="mt-6 flex justify-end space-x-3">
+                            <button
+                                type="button"
+                                onClick={onClose}
+                                className="px-4 py-2 bg-gray-200 text-gray-700 font-semibold rounded-lg shadow-md hover:bg-gray-300 transition duration-150"
+                            >
+                                අවලංගු කරන්න (Cancel)
+                            </button>
+                            <button
+                                type="submit"
+                                className={`px-4 py-2 text-white font-semibold rounded-lg shadow-md transition duration-150 ${isCashIn ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'}`}
+                            >
+                                {isCashIn ? 'ආදායම සටහන් කරන්න (Record Income)' : 'වියදම සටහන් කරන්න (Record Expense)'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        );
+    };
+
+
+    // 2. Dashboard Component (Updated with Low Stock Alert)
+    const DashboardPage = () => {
+        const today = new Date();
+        const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+        const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0, 23, 59, 59);
+
+        const monthlyTransactions = transactions.filter(t => t.date >= startOfMonth && t.date <= endOfMonth);
+
+        const monthlySummary = calculateSummary(monthlyTransactions);
+        const overallSummary = calculateSummary(transactions);
+
+        const SummaryCard = ({ title, amount, color, icon: Icon }) => (
+            <div className="bg-white p-6 rounded-xl shadow-lg border-b-4 border-l-2" style={{ borderColor: color }}>
+                <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-medium text-gray-500 uppercase">{title}</h3>
+                    {Icon && <Icon className="w-6 h-6 text-gray-400" />}
+                </div>
+                <p className={`mt-1 text-3xl font-bold ${color === 'green' ? 'text-green-600' : color === 'red' ? 'text-red-600' : 'text-blue-600'}`}>
+                    {formatCurrency(amount)}
+                </p>
+            </div>
+        );
+
+        return (
+            <div className="p-4 sm:p-6">
+                <h2 className="text-3xl font-bold text-gray-800 mb-6">ප්‍රධාන දෑෂ්බෝර්ඩ් (Dashboard Overview)</h2>
+
+                {/* Low Stock Alert Section (NEW) */}
+                {lowStockAlerts.length > 0 && (
+                    <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 rounded-lg shadow-md mb-6 flex items-center">
+                        <AlertTriangle className="w-6 h-6 mr-3 flex-shrink-0" />
+                        <div>
+                            <p className="font-bold">අවවාදයයි! තොග ප්‍රමාණය අඩුයි! (Low Stock Alert!)</p>
+                            <p className="text-sm">
+                                {lowStockAlerts.slice(0, 3).map(item => item.name).join(', ')} ඇතුළු තවත් භාණ්ඩ {lowStockAlerts.length} ක් තොග සීමාවට වඩා අඩුයි. (
+                                <button onClick={() => setActivePage('inventory')} className="font-semibold underline hover:text-yellow-900">තොග පිටුවට යන්න</button>)
+                            </p>
+                        </div>
+                    </div>
+                )}
+
+
+                {/* Bank Accounts / Current Balance */}
+                <div className="mb-8">
+                    <h3 className="text-xl font-semibold text-gray-700 mb-4 border-b pb-2 flex items-center"><Banknote className="w-6 h-6 mr-2 text-blue-600" /> වත්මන් මුදල් ප්‍රවාහ ශේෂය (Current Cash Flow Balance)</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <SummaryCard 
+                            title="මුළු ශේෂය (Total Balance)" 
+                            amount={overallSummary.netProfit} 
+                            color={overallSummary.netProfit >= 0 ? 'blue' : 'red'} 
+                            icon={DollarSign}
+                        />
+                         <div className="bg-white p-6 rounded-xl shadow-lg border-b-4 border-l-2 border-gray-400">
+                             <h3 className="text-sm font-medium text-gray-500 uppercase">අවසාන ගනුදෙනු දිනය (Last Transaction Date)</h3>
+                             <p className="mt-1 text-xl font-bold text-gray-800">
+                                 {transactions.length > 0 ? transactions[0].date.toLocaleDateString('si-LK') : 'ගනුදෙනු නොමැත'}
+                             </p>
+                             <p className="text-xs text-gray-500">සියලුම සටහන් මත පදනම්ව (Based on all entries)</p>
+                         </div>
+                    </div>
+                </div>
+
+                {/* Monthly Performance */}
+                <div className="mb-8">
+                    <h3 className="text-xl font-semibold text-gray-700 mb-4 border-b pb-2">මෙම මාසයේ කාර්ය සාධනය (This Month's Performance)</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <SummaryCard title="මුළු ආදායම (Total Income)" amount={monthlySummary.totalIn} color="green" />
+                        <SummaryCard title="මුළු වියදම් (Total Expenses)" amount={monthlySummary.totalOut} color="red" />
+                        <SummaryCard title="මාසික ලාභය (Monthly Profit)" amount={monthlySummary.netProfit} color={monthlySummary.netProfit >= 0 ? 'blue' : 'red'} />
+                    </div>
+                </div>
+                
+                {/* Quick Actions */}
+                <div className="flex flex-wrap gap-4 mt-8">
+                    <button
+                        onClick={() => { setModalType('in'); setIsModalOpen(true); }}
+                        className="flex items-center space-x-2 px-6 py-3 bg-green-500 text-white font-semibold rounded-full shadow-lg hover:bg-green-600 transition transform hover:scale-105"
+                    >
+                        <Plus className="w-5 h-5" />
+                        <span>අලුත් ආදායමක් (New Sale / Cash In)</span>
+                    </button>
+                    <button
+                        onClick={() => { setModalType('out'); setIsModalOpen(true); }}
+                        className="flex items-center space-x-2 px-6 py-3 bg-red-500 text-white font-semibold rounded-full shadow-lg hover:bg-red-600 transition transform hover:scale-105"
+                    >
+                        <Plus className="w-5 h-5" />
+                        <span>අලුත් වියදමක් (New Expense / Cash Out)</span>
+                    </button>
+                </div>
+            </div>
+        );
+    };
+
+    // 3. Inventory Component (NEW PAGE)
+    const InventoryPage = () => {
+        const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+        const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
+        const [selectedItem, setSelectedItem] = useState(null);
+        
+        // Add/Edit Item Modal
+        const InventoryItemModal = ({ itemToEdit, onClose }) => {
+            const [formData, setFormData] = useState({
+                name: itemToEdit?.name || '',
+                unit: itemToEdit?.unit || 'Unit',
+                currentStock: itemToEdit?.currentStock || 0,
+                lowStockThreshold: itemToEdit?.lowStockThreshold || 5,
+                type: itemToEdit?.type || 'supply',
+                color: itemToEdit?.color || 'bg-blue-100',
+            });
+    
+            const handleChange = (e) => {
+                const { name, value } = e.target;
+                setFormData(prev => ({ ...prev, [name]: value }));
+            };
+    
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                // Simple add for now, editing functionality can be added later
+                if (!itemToEdit) {
+                    await addInventoryItem(formData);
+                } else {
+                    // Update existing item (if needed, use itemToEdit.id)
+                    // For simplicity, this modal is mainly for adding
+                    await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/inventory`, itemToEdit.id), {
+                        name: formData.name,
+                        unit: formData.unit,
+                        lowStockThreshold: parseFloat(formData.lowStockThreshold),
+                        type: formData.type,
+                    });
+                }
+                onClose();
+            };
+    
+            return (
+                <div className="fixed inset-0 bg-gray-900 bg-opacity-70 flex items-center justify-center p-4 z-50">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
+                        <h2 className="text-2xl font-bold mb-4 text-gray-700">නව භාණ්ඩයක් එක් කරන්න (Add New Item)</h2>
+                        <form onSubmit={handleSubmit}>
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700">නම (Item Name)</label>
+                                    <input type="text" name="name" value={formData.name} onChange={handleChange} required className="mt-1 w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" />
+                                </div>
+                                <div className='grid grid-cols-2 gap-4'>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700">ඒකකය (Unit)</label>
+                                        <input type="text" name="unit" value={formData.unit} onChange={handleChange} required className="mt-1 w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" />
+                                        <p className="text-xs text-gray-500 mt-1">e.g., Ream, Meter, Unit</p>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700">අඩු තොග සීමාව (Low Stock Threshold)</label>
+                                        <input type="number" name="lowStockThreshold" value={formData.lowStockThreshold} onChange={handleChange} min="0" required className="mt-1 w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" />
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="mt-6 flex justify-end space-x-3">
+                                <button type="button" onClick={onClose} className="px-4 py-2 bg-gray-200 text-gray-700 font-semibold rounded-lg shadow-md hover:bg-gray-300 transition">අවලංගු කරන්න</button>
+                                <button type="submit" className="px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition">එක් කරන්න</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        // Stock Adjustment Modal
+        const StockAdjustModal = ({ item, onClose }) => {
+            const [quantity, setQuantity] = useState(1);
+            const [operation, setOperation] = useState('add');
+            const [isSubmitting, setIsSubmitting] = useState(false);
+    
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setIsSubmitting(true);
+                const success = await updateInventoryStock(item.id, parseFloat(quantity), operation);
+                setIsSubmitting(false);
+                if (success) {
+                    onClose();
+                }
+            };
+    
+            return (
+                <div className="fixed inset-0 bg-gray-900 bg-opacity-70 flex items-center justify-center p-4 z-50">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
+                        <h2 className="text-2xl font-bold mb-4 text-gray-700">තොගය වෙනස් කරන්න: {item.name}</h2>
+                        <form onSubmit={handleSubmit}>
+                            <div className="space-y-4">
+                                <div className="flex space-x-4">
+                                    <button 
+                                        type="button"
+                                        onClick={() => setOperation('add')}
+                                        className={`flex-1 p-3 rounded-lg font-semibold transition ${operation === 'add' ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                                    >
+                                        තොගයට එක් කරන්න (Add Stock)
+                                    </button>
+                                    <button 
+                                        type="button"
+                                        onClick={() => setOperation('subtract')}
+                                        className={`flex-1 p-3 rounded-lg font-semibold transition ${operation === 'subtract' ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                                    >
+                                        තොගයෙන් අඩු කරන්න (Subtract Stock)
+                                    </button>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700">ප්‍රමාණය ({item.unit})</label>
+                                    <input 
+                                        type="number" 
+                                        value={quantity} 
+                                        onChange={(e) => setQuantity(e.target.value)} 
+                                        min="0.01" 
+                                        step="0.01" 
+                                        required 
+                                        className="mt-1 w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" 
+                                    />
+                                </div>
+                            </div>
+                            <div className="mt-6 flex justify-end space-x-3">
+                                <button type="button" onClick={onClose} className="px-4 py-2 bg-gray-200 text-gray-700 font-semibold rounded-lg shadow-md hover:bg-gray-300 transition" disabled={isSubmitting}>අවලංගු කරන්න</button>
+                                <button 
+                                    type="submit" 
+                                    className={`px-4 py-2 text-white font-semibold rounded-lg shadow-md transition ${operation === 'add' ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'} disabled:bg-gray-500`}
+                                    disabled={isSubmitting}
+                                >
+                                    {isSubmitting ? 'යාවත්කාලීන වෙමින්...' : 'තොගය යාවත්කාලීන කරන්න'}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+
+        const openAdjustModal = (item) => {
+            setSelectedItem(item);
+            setIsAdjustModalOpen(true);
+        }
+
+        const confirmDelete = (itemId) => {
+            if (window.confirm("ඔබට මෙම භාණ්ඩය තොගයෙන් ඉවත් කිරීමට අවශ්‍යද?")) {
+                deleteInventoryItem(itemId);
+            }
+        };
+
+        return (
+            <div className="p-4 sm:p-6">
+                <h2 className="text-3xl font-bold text-gray-800 mb-6 flex items-center"><Archive className="w-7 h-7 mr-3 text-blue-600"/> භාණ්ඩ තොග කළමනාකරණය (Inventory Management)</h2>
+
+                <div className="flex justify-between items-center mb-6">
+                    <p className="text-gray-600 font-medium">වත්මන් භාණ්ඩ ගණන: {inventoryItems.length}</p>
+                    <button
+                        onClick={() => setIsAddModalOpen(true)}
+                        className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition transform hover:scale-105"
+                    >
+                        <Plus className="w-5 h-5" />
+                        <span>නව භාණ්ඩයක් (New Item)</span>
+                    </button>
+                </div>
+
+                <div className="bg-white rounded-xl shadow-lg overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                        <thead className="bg-gray-50">
+                            <tr>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">භාණ්ඩය (Item)</th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ඒකකය (Unit)</th>
+                                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">වත්මන් තොගය (Current Stock)</th>
+                                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">අඩු තොග සීමාව (Threshold)</th>
+                                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">ක්‍රියාමාර්ග (Actions)</th>
+                            </tr>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-gray-200">
+                            {inventoryItems.map((item) => {
+                                const isLow = item.currentStock <= item.lowStockThreshold;
+                                return (
+                                <tr key={item.id} className={isLow ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-gray-50'}>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                        {item.name}
+                                        {isLow && <span className="ml-2 px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-500 text-white">අඩුයි! (LOW)</span>}
+                                    </td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.unit}</td>
+                                    <td className={`px-6 py-4 whitespace-nowrap text-right text-lg font-bold ${isLow ? 'text-red-600' : 'text-green-600'}`}>
+                                        {item.currentStock}
+                                    </td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-500">{item.lowStockThreshold}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                        <button
+                                            onClick={() => openAdjustModal(item)}
+                                            className="text-blue-600 hover:text-blue-900 p-2 rounded-full hover:bg-blue-50 transition mr-2 font-semibold text-xs"
+                                        >
+                                            තොග වෙනස් කරන්න
+                                        </button>
+                                        <button
+                                            onClick={() => confirmDelete(item.id)}
+                                            className="text-gray-400 hover:text-red-600 p-1 rounded-full hover:bg-red-50 transition"
+                                        >
+                                            <Trash2 className="w-5 h-5" />
+                                        </button>
+                                    </td>
+                                </tr>
+                            )})}
+                            {inventoryItems.length === 0 && (
+                                <tr>
+                                    <td colSpan="5" className="text-center py-8 text-gray-500">තොග කළමනාකරණය සඳහා භාණ්ඩ එකතු කරන්න.</td>
+                                </tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+
+                {/* Modals for Inventory */}
+                {isAddModalOpen && <InventoryItemModal onClose={() => setIsAddModalOpen(false)} />}
+                {isAdjustModalOpen && selectedItem && (
+                    <StockAdjustModal item={selectedItem} onClose={() => setIsAdjustModalOpen(false)} />
+                )}
+            </div>
+        );
+    };
+    
+    // 4. Transactions Component (unchanged)
+    const TransactionsPage = () => {
+        const [filterType, setFilterType] = useState('all');
+
+        const filteredTransactions = transactions.filter(t => {
+            if (filterType === 'all') return true;
+            return t.type === filterType;
+        });
+
+        const totalSummary = calculateSummary(transactions);
+
+        const confirmDelete = (transactionId) => {
+            if (window.confirm("ඔබට මෙම ගනුදෙනුව මකා දැමීමට අවශ්‍ය බව සහතිකද?")) {
+                deleteTransaction(transactionId);
+            }
+        };
+
+        return (
+            <div className="p-4 sm:p-6">
+                <h2 className="text-3xl font-bold text-gray-800 mb-6">සියලුම ගනුදෙනු (All Transactions)</h2>
+
+                <div className="bg-gray-100 p-4 rounded-xl shadow-inner mb-6 flex flex-col md:flex-row justify-between items-start md:items-center">
+                    <div className="flex space-x-4 mb-4 md:mb-0">
+                        <button
+                            onClick={() => setFilterType('all')}
+                            className={`px-4 py-2 rounded-full font-semibold transition ${filterType === 'all' ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-blue-50'}`}
+                        >
+                            සියල්ල (All) ({transactions.length})
+                        </button>
+                        <button
+                            onClick={() => setFilterType('in')}
+                            className={`px-4 py-2 rounded-full font-semibold transition ${filterType === 'in' ? 'bg-green-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-green-50'}`}
+                        >
+                            ආදායම් (Cash In) ({transactions.filter(t => t.type === 'in').length})
+                        </button>
+                        <button
+                            onClick={() => setFilterType('out')}
+                            className={`px-4 py-2 rounded-full font-semibold transition ${filterType === 'out' ? 'bg-red-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-red-50'}`}
+                        >
+                            වියදම් (Cash Out) ({transactions.filter(t => t.type === 'out').length})
+                        </button>
+                    </div>
+                    <div className="text-sm font-semibold space-y-1">
+                        <p className="text-green-600">මුළු ආදායම: {formatCurrency(totalSummary.totalIn)}</p>
+                        <p className="text-red-600">මුළු වියදම: {formatCurrency(totalSummary.totalOut)}</p>
+                        <p className={`text-lg font-bold ${totalSummary.netProfit >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
+                            ශුද්ධ ලාභය (NET): {formatCurrency(totalSummary.netProfit)}
+                        </p>
+                    </div>
+                </div>
+
+                <div className="bg-white rounded-xl shadow-lg overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                        <thead className="bg-gray-50">
+                            <tr>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">දිනය (Date)</th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">වර්ගය (Type)</th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ගණය (Category)</th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">මුදල (Amount)</th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ක්‍රමය (Method)</th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">විස්තරය (Desc.)</th>
+                                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">ක්‍රියාමාර්ග (Actions)</th>
+                            </tr>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-gray-200">
+                            {filteredTransactions.map((t) => (
+                                <tr key={t.id} className="hover:bg-yellow-50/50">
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{t.date.toLocaleDateString('si-LK')}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                        <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${t.type === 'in' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                                            {t.type === 'in' ? 'IN' : 'OUT'}
+                                        </span>
+                                    </td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{t.category}</td>
+                                    <td className={`px-6 py-4 whitespace-nowrap text-sm font-bold ${t.type === 'in' ? 'text-green-600' : 'text-red-600'}`}>
+                                        {formatCurrency(t.amount)}
+                                    </td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{t.paymentMethod.replace(/\s\(.*\)/, '')}</td>
+                                    <td className="px-6 py-4 text-sm text-gray-500 max-w-xs overflow-hidden truncate">{t.description || '-'}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                        <button
+                                            onClick={() => confirmDelete(t.id)}
+                                            className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-50"
+                                        >
+                                            <Trash2 className="w-5 h-5" />
+                                        </button>
+                                    </td>
+                                </tr>
+                            ))}
+                            {filteredTransactions.length === 0 && (
+                                <tr>
+                                    <td colSpan="7" className="text-center py-8 text-gray-500">මෙම පෙරහනට අදාළ ගනුදෙනු හමු නොවීය.</td>
+                                </tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        );
+    };
+
+    // 5. Reports Component (unchanged)
+    const ReportsPage = () => {
+        const today = new Date();
+        const currentYear = today.getFullYear();
+        const currentMonth = today.getMonth();
+    
+        const getPeriodDates = (period) => {
+            const now = new Date();
+            let start, end;
+        
+            switch (period) {
+                case 'Today':
+                    start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                    end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+                    break;
+                case 'This Week':
+                    const dayOfWeek = now.getDay() === 0 ? 6 : now.getDay() - 1;
+                    start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek);
+                    end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+                    break;
+                case 'This Month':
+                    start = new Date(now.getFullYear(), now.getMonth(), 1);
+                    end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+                    break;
+                case 'This Year':
+                    start = new Date(now.getFullYear(), 0, 1);
+                    end = new Date(now.getFullYear(), 11, 31, 23, 59, 59);
+                    break;
+                default:
+                    start = new Date(currentYear, currentMonth, 1); 
+                    end = new Date(currentYear, currentMonth, today.getDate(), 23, 59, 59); 
+            }
+            return {
+                startDate: formatDateInput(start),
+                endDate: formatDateInput(end),
+            };
+        };
+
+        const defaultPeriod = getPeriodDates('This Month');
+
+        const [startDate, setStartDate] = useState(defaultPeriod.startDate);
+        const [endDate, setEndDate] = useState(defaultPeriod.endDate);
+        const [activeFilter, setActiveFilter] = useState('This Month');
+        
+        const applyQuickFilter = (period) => {
+            const { startDate: newStart, endDate: newEnd } = getPeriodDates(period);
+            setStartDate(newStart);
+            setEndDate(newEnd);
+            setActiveFilter(period);
+        };
+
+        const filteredTransactions = useMemo(() => {
+            const start = new Date(startDate + 'T00:00:00');
+            const end = new Date(endDate + 'T23:59:59'); 
+    
+            return transactions.filter(t => t.date >= start && t.date <= end);
+        }, [transactions, startDate, endDate]);
+    
+        const periodSummary = calculateSummary(filteredTransactions);
+    
+        const categoryTotals = useMemo(() => {
+            const totals = filteredTransactions.reduce((acc, t) => {
+                if (!acc[t.category]) {
+                    acc[t.category] = { amount: 0, type: t.type };
+                }
+                acc[t.category].amount += t.amount;
+                return acc;
+            }, {});
+    
+            const categoriesArray = Object.keys(totals).map(name => ({
+                name,
+                amount: totals[name].amount,
+                type: totals[name].type
+            }));
+    
+            const incomeCategories = categoriesArray
+                .filter(c => c.type === 'in')
+                .sort((a, b) => b.amount - a.amount)
+                .slice(0, 5);
+            
+            const expenseCategories = categoriesArray
+                .filter(c => c.type === 'out')
+                .sort((a, b) => b.amount - a.amount)
+                .slice(0, 5);
+    
+            return { incomeCategories, expenseCategories };
+        }, [filteredTransactions]);
+
+        const handleCustomDateChange = (setter, value) => {
+            setter(value);
+            setActiveFilter(null);
+        };
+    
+        const SummaryCard = ({ title, amount, color }) => (
+            <div className="bg-white p-6 rounded-xl shadow-lg border-b-4 border-l-2" style={{ borderColor: color }}>
+                <h3 className="text-sm font-medium text-gray-500 uppercase">{title}</h3>
+                <p className={`mt-1 text-3xl font-bold ${color === 'green' ? 'text-green-600' : color === 'red' ? 'text-red-600' : 'text-blue-600'}`}>
+                    {formatCurrency(amount)}
+                </p>
+            </div>
+        );
+    
+        const CategoryList = ({ title, list, typeColor }) => (
+            <div className="bg-white p-6 rounded-xl shadow-lg h-full">
+                <h4 className="text-xl font-semibold mb-4 text-gray-700 border-b pb-2">{title}</h4>
+                <ul className="space-y-3">
+                    {list.map((c, index) => (
+                        <li key={c.name} className="flex justify-between items-center p-2 text-sm font-medium border-b border-gray-100 last:border-b-0">
+                            <span className="text-gray-600">{index + 1}. {c.name}</span>
+                            <span className={`font-bold ${typeColor}`}>
+                                {formatCurrency(c.amount)}
+                            </span>
+                        </li>
+                    ))}
+                    {list.length === 0 && (
+                        <li className="text-gray-500 italic text-sm p-2">වාර්තා නැත.</li>
+                    )}
+                </ul>
+            </div>
+        );
+
+        // Custom tooltip for Pie Chart
+        const CustomPieTooltip = ({ active, payload }) => {
+            if (active && payload && payload.length) {
+                const data = payload[0].payload;
+                return (
+                    <div className="bg-white p-2 border rounded-lg shadow-md text-sm">
+                        <p className="font-semibold text-gray-800">{data.name}</p>
+                        <p className="text-gray-600">මුදල: {formatCurrency(data.value)}</p>
+                        <p className="text-gray-600">ප්‍රතිශතය: {data.percent.toFixed(1)}%</p>
+                    </div>
+                );
+            }
+            return null;
+        };
+    
+        // Custom tooltip for Bar Chart
+        const CustomBarTooltip = ({ active, payload, label }) => {
+            if (active && payload && payload.length) {
+                const income = payload.find(p => p.name === 'Income')?.value || 0;
+                const expense = payload.find(p => p.name === 'Expense')?.value || 0;
+                const result = income - expense;
+
+                return (
+                    <div className="bg-white p-2 border rounded-lg shadow-md text-sm">
+                        <p className="font-semibold text-gray-800">{label} {currentYear}</p>
+                        <p className="text-green-600">ආදායම: {formatCurrency(income)}</p>
+                        <p className="text-red-600">වියදම: {formatCurrency(expense)}</p>
+                        <p className={result >= 0 ? "text-blue-600 font-bold" : "text-red-600 font-bold"}>
+                            ශුද්ධය: {formatCurrency(result)}
+                        </p>
+                    </div>
+                );
+            }
+            return null;
+        };
+
+        const PieChartComponent = ({ data, title }) => (
+            <div className="bg-white p-6 rounded-xl shadow-lg flex flex-col items-center">
+                <h4 className="text-xl font-semibold mb-4 text-gray-700 border-b pb-2 w-full text-center">{title}</h4>
+                {data.length > 0 ? (
+                    <ResponsiveContainer width="100%" height={300}>
+                        <PieChart>
+                            <Pie
+                                data={data}
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={70}
+                                outerRadius={100}
+                                fill="#8884d8"
+                                paddingAngle={5}
+                                dataKey="value"
+                            >
+                                {data.map((entry, index) => (
+                                    <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                                ))}
+                            </Pie>
+                            <Tooltip content={<CustomPieTooltip />} />
+                            <Legend layout="vertical" align="right" verticalAlign="middle" wrapperStyle={{ paddingLeft: '10px' }} />
+                        </PieChart>
+                    </ResponsiveContainer>
+                ) : (
+                    <div className="h-[300px] flex items-center justify-center text-gray-500 italic">මෙම මාසය සඳහා වියදම් දත්ත නොමැත.</div>
+                )}
+            </div>
+        );
+
+        const BarChartComponent = ({ data, title }) => (
+            <div className="bg-white p-6 rounded-xl shadow-lg">
+                <h4 className="text-xl font-semibold mb-4 text-gray-700 border-b pb-2 w-full text-center">{title} ({currentYear})</h4>
+                {data.some(d => d.Income > 0 || d.Expense > 0) ? (
+                    <ResponsiveContainer width="100%" height={300}>
+                        <BarChart
+                            data={data}
+                            margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+                        >
+                            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                            <XAxis dataKey="name" stroke="#6b7280" />
+                            <YAxis stroke="#6b7280" tickFormatter={(value) => formatCurrency(value)} />
+                            <Tooltip content={<CustomBarTooltip />} />
+                            <Legend />
+                            <Bar dataKey="Income" fill="#10B981" name="ආදායම (Income)" radius={[4, 4, 0, 0]} />
+                            <Bar dataKey="Expense" fill="#EF4444" name="වියදම (Expense)" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                    </ResponsiveContainer>
+                ) : (
+                    <div className="h-[300px] flex items-center justify-center text-gray-500 italic">මෙම වසර සඳහා ගනුදෙනු වාර්තා කර නොමැත.</div>
+                )}
+            </div>
+        );
+
+
+    
+        return (
+            <div className="p-4 sm:p-6">
+                <h2 className="text-3xl font-bold text-gray-800 mb-6">මුල්‍ය වාර්තා සහ විශ්ලේෂණ (Financial Reports & Analytics)</h2>
+                
+                {/* Monthly Trend Chart (Income & Expense) */}
+                <div className="mb-8">
+                    <BarChartComponent 
+                        data={chartData.monthlyTrendData} 
+                        title="මාසික ආදායම් සහ වියදම් ප්‍රවණතාව (Monthly Income & Expense Trend)"
+                    />
+                </div>
+
+                {/* Quick Filter Buttons */}
+                <div className="mb-6">
+                    <h3 className="text-lg font-semibold text-gray-700 mb-3">කඩිනම් පෙරහන් (Quick Filters):</h3>
+                    <div className="flex flex-wrap gap-3">
+                        {['Today', 'This Week', 'This Month', 'This Year'].map(period => (
+                            <button
+                                key={period}
+                                onClick={() => applyQuickFilter(period)}
+                                className={`px-4 py-2 rounded-full text-sm font-medium transition duration-150 ${activeFilter === period ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                            >
+                                {period === 'Today' ? 'අද' : period === 'This Week' ? 'මේ සතිය' : period === 'This Month' ? 'මේ මාසය' : 'මේ වසර'}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Date Selection Controls */}
+                <div className="bg-white p-6 rounded-xl shadow-lg mb-8 flex flex-col md:flex-row gap-4 items-center">
+                    <div className="w-full md:w-1/2">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">ආරම්භක දිනය (Start Date)</label>
+                        <input
+                            type="date"
+                            value={startDate}
+                            onChange={(e) => handleCustomDateChange(setStartDate, e.target.value)}
+                            className="w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                        />
+                    </div>
+                    <div className="w-full md:w-1/2">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">අවසාන දිනය (End Date)</label>
+                        <input
+                            type="date"
+                            value={endDate}
+                            onChange={(e) => handleCustomDateChange(setEndDate, e.target.value)}
+                            className="w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                        />
+                    </div>
+                </div>
+                
+                <p className="text-lg text-gray-600 mb-8 font-semibold">
+                    වාර්තා පෙන්වන කාලය: <span className="text-blue-600">{new Date(startDate).toLocaleDateString('si-LK')}</span> සිට <span className="text-blue-600">{new Date(endDate).toLocaleDateString('si-LK')}</span> දක්වා
+                </p>
+    
+                {/* Period Summary */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+                    <SummaryCard title={`මුළු ආදායම`} amount={periodSummary.totalIn} color="green" />
+                    <SummaryCard title={`මුළු වියදම්`} amount={periodSummary.totalOut} color="red" />
+                    <SummaryCard title={`ශුද්ධ ලාභය`} amount={periodSummary.netProfit} color={periodSummary.netProfit >= 0 ? 'blue' : 'red'} />
+                </div>
+    
+                {/* Expense Overview Pie Chart & Category Breakdown */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <PieChartComponent 
+                        data={chartData.expensePieData} 
+                        title={`වත්මන් මාසික වියදම් සාරාංශය (Current Month Expense Overview)`}
+                    />
+                    <CategoryList 
+                        title="වැඩිම වියදම් ගණයන් 5 (Top 5 Expense Categories)" 
+                        list={categoryTotals.expenseCategories} 
+                        typeColor="text-red-600"
+                    />
+                </div>
+                
+                {/* Income Breakdown */}
+                 <div className="mt-6">
+                    <CategoryList 
+                        title="වැඩිම ආදායම් ගණයන් 5 (Top 5 Income Categories)" 
+                        list={categoryTotals.incomeCategories} 
+                        typeColor="text-green-600"
+                    />
+                </div>
+
+            </div>
+        );
+    };
+
+
+    // 6. Categories Component (unchanged)
+    const CategoriesPage = () => {
+        const [newCategoryName, setNewCategoryName] = useState('');
+        const [newCategoryType, setNewCategoryType] = useState('in');
+
+        const addCategory = async (e) => {
+            e.preventDefault();
+            if (!db || !userId || !newCategoryName.trim()) return;
+
+            const categoriesRef = collection(db, `artifacts/${appId}/users/${userId}/categories`);
+            
+            try {
+                await addDoc(categoriesRef, {
+                    name: newCategoryName.trim(),
+                    type: newCategoryType,
+                    color: newCategoryType === 'in' ? 'bg-green-100' : 'bg-red-100',
+                    createdAt: new Date().toISOString()
+                });
+                setNewCategoryName('');
+            } catch (e) {
+                console.error("Error adding category: ", e);
+            }
+        };
+
+        const deleteCategory = async (id) => {
+            if (!db || !userId) return;
+
+            if (window.confirm("ඔබට මෙම ගණය මකා දැමීමට අවශ්‍ය බව සහතිකද?")) {
+                try {
+                    await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/categories`, id));
+                } catch (e) {
+                    console.error("Error deleting category: ", e);
+                }
+            }
+        };
+
+        return (
+            <div className="p-4 sm:p-6">
+                <h2 className="text-3xl font-bold text-gray-800 mb-6">ගණය සහ සැකසුම් කළමනාකරණය (Category & Settings Management)</h2>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <div className="lg:col-span-1 bg-white p-6 rounded-xl shadow-lg h-fit">
+                        <h3 className="text-xl font-semibold mb-4 text-gray-700 border-b pb-2">නව ගණයක් එක් කරන්න (Add New Category)</h3>
+                        <form onSubmit={addCategory} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">ගණයේ නම (Category Name)</label>
+                                <input
+                                    type="text"
+                                    value={newCategoryName}
+                                    onChange={(e) => setNewCategoryName(e.target.value)}
+                                    required
+                                    className="mt-1 w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">වර්ගය (Type)</label>
+                                <select
+                                    value={newCategoryType}
+                                    onChange={(e) => setNewCategoryType(e.target.value)}
+                                    className="mt-1 w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                                >
+                                    <option value="in">ආදායම් (Cash In)</option>
+                                    <option value="out">වියදම් (Cash Out)</option>
+                                </select>
+                            </div>
+                            <button
+                                type="submit"
+                                className="w-full px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition duration-150 flex items-center justify-center space-x-2"
+                            >
+                                <Plus className="w-5 h-5" /> <span>ගණය එක් කරන්න</span>
+                            </button>
+                        </form>
+                    </div>
+
+                    <div className="lg:col-span-2 bg-white p-6 rounded-xl shadow-lg">
+                        <h3 className="text-xl font-semibold mb-4 text-gray-700 border-b pb-2">වත්මන් ගණයන් (Current Categories)</h3>
+                        <div className="space-y-3">
+                            {categories.map(cat => (
+                                <div key={cat.id} className="flex justify-between items-center p-3 border rounded-lg hover:bg-gray-50 transition">
+                                    <span className="font-medium text-gray-800">{cat.name}</span>
+                                    <div className="flex items-center space-x-3">
+                                        <span className={`text-xs font-semibold px-3 py-1 rounded-full ${cat.type === 'in' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                                            {cat.type === 'in' ? 'ආදායම්' : 'වියදම්'}
+                                        </span>
+                                        <button
+                                            onClick={() => deleteCategory(cat.id)}
+                                            className="text-gray-400 hover:text-red-600 p-1 rounded-full transition"
+                                        >
+                                            <Trash2 className="w-5 h-5" />
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+
+    // --- MAIN RENDER ---
+    const renderPage = useMemo(() => {
+        if (!isAuthReady) {
+            return (
+                <div className="flex items-center justify-center h-full min-h-screen">
+                    <div className="text-center p-8 bg-white rounded-xl shadow-xl">
+                        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+                        <p className="text-lg font-semibold text-gray-700">දත්ත සමග සම්බන්ධ වෙමින් පවතී... (Connecting to data...)</p>
+                        <p className="text-sm text-gray-500 mt-1">කරුණාකර මොහොතක් රැඳී සිටින්න. (Please wait for sync.)</p>
+                    </div>
+                </div>
+            );
+        }
+
+        switch (activePage) {
+            case 'dashboard':
+                return <DashboardPage />;
+            case 'transactions':
+                return <TransactionsPage />;
+            case 'reports':
+                return <ReportsPage />;
+            case 'inventory': // NEW PAGE
+                return <InventoryPage />;
+            case 'categories':
+                return <CategoriesPage />;
+            default:
+                return <DashboardPage />;
+        }
+    }, [activePage, isAuthReady, transactions, categories, inventoryItems, userId, chartData, lowStockAlerts]);
+
+    const navItems = [
+        { name: 'Dashboard (ප්‍රධාන පිටුව)', icon: LayoutDashboard, page: 'dashboard' },
+        { name: 'Transactions (ගනුදෙනු)', icon: History, page: 'transactions' },
+        { name: 'Inventory (තොගය)', icon: Archive, page: 'inventory' }, // NEW
+        { name: 'Reports (වාර්තා)', icon: BarChartIcon, page: 'reports' },
+        { name: 'Settings (සැකසුම්)', icon: Settings, page: 'categories' },
+    ];
+
+    return (
+        <div className="min-h-screen flex bg-gray-50 font-sans">
+            {/* Sidebar Navigation */}
+            <nav className="hidden md:flex flex-col w-64 bg-white border-r border-gray-200 shadow-xl fixed h-full z-10">
+                <div className="p-6 border-b">
+                    <h1 className="text-2xl font-black text-blue-700">Smart Tracker</h1>
+                    <p className="text-xs text-gray-500 mt-1">පරිශීලක ID: <span className="text-blue-500 font-mono text-[10px]">{userId || 'Loading...'}</span></p>
+                </div>
+                <div className="flex-grow p-4 space-y-2">
+                    {navItems.map(item => (
+                        <button
+                            key={item.page}
+                            onClick={() => setActivePage(item.page)}
+                            className={`flex items-center space-x-3 w-full px-4 py-3 rounded-xl font-semibold transition duration-150 ${activePage === item.page ? 'bg-blue-100 text-blue-700 shadow-md' : 'text-gray-600 hover:bg-gray-100'}`}
+                        >
+                            <item.icon className="w-5 h-5" />
+                            <span>{item.name.split('(')[0].trim()}</span>
+                            {item.page === 'dashboard' && lowStockAlerts.length > 0 && (
+                                <span className="ml-auto bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">{lowStockAlerts.length}</span>
+                            )}
+                        </button>
+                    ))}
+                </div>
+            </nav>
+
+            {/* Main Content Area */}
+            <main className="flex-1 md:ml-64 transition-all duration-300">
+                {/* Mobile Header and Nav */}
+                <header className="md:hidden sticky top-0 bg-white shadow-md p-4 flex justify-between items-center z-20">
+                    <h1 className="text-xl font-black text-blue-700">Smart Tracker</h1>
+                    <select
+                        value={activePage}
+                        onChange={(e) => setActivePage(e.target.value)}
+                        className="p-2 border rounded-lg text-sm font-semibold"
+                    >
+                        {navItems.map(item => (
+                            <option key={item.page} value={item.page}>{item.name.replace(/\(.*\)/, '').trim()}</option>
+                        ))}
+                    </select>
+                </header>
+
+                {/* Page Content */}
+                <div className="p-4 sm:p-6 pb-20">
+                    {renderPage}
+                </div>
+            </main>
+
+            {/* Floating Action Buttons (Mobile/Quick Access) */}
+            <div className="fixed bottom-4 right-4 z-40 flex flex-col space-y-3">
+                <button
+                    onClick={() => { setModalType('out'); setIsModalOpen(true); }}
+                    className="p-4 bg-red-600 text-white rounded-full shadow-2xl hover:bg-red-700 transition transform hover:scale-110 border-4 border-white"
+                    title="වියදම් සටහන් කරන්න (Add Expense / Cash Out)"
+                >
+                    <DollarSign className="w-6 h-6 rotate-45" />
+                </button>
+                <button
+                    onClick={() => { setModalType('in'); setIsModalOpen(true); }}
+                    className="p-4 bg-green-600 text-white rounded-full shadow-2xl hover:bg-green-700 transition transform hover:scale-110 border-4 border-white"
+                    title="ආදායම් සටහන් කරන්න (Add Sale / Cash In)"
+                >
+                    <DollarSign className="w-6 h-6 -rotate-45" />
+                </button>
+            </div>
+
+
+            {/* Transaction Modal */}
+            {isModalOpen && (
+                <TransactionModal
+                    type={modalType}
+                    onClose={() => setIsModalOpen(false)}
+                    onSave={addTransaction}
+                />
+            )}
+        </div>
+    );
+};
+
+export default App;
